@@ -6,133 +6,135 @@ interface IERC20 {
     function balanceOf(address account) external view returns (uint256);
 }
 
-contract InheritanceContract {
+contract DigitalWill {
     address public owner;
     address public oracle;
-    bool public isDeceased = false;
-    uint256 public deceasedTime;
-    string public encryptedWillHash;
+    address public executor;
+    bool public isDeceased;
 
-    IERC20 public token;
+    string private encryptedWillHash;
+    string public estateDescription;
 
-    struct Beneficiary {
-        address recipient;
-        uint256 share;
-    }
-
-    Beneficiary[] public tokenBeneficiaries;
-    mapping(address => uint256) public tokenShares;
-    uint256 public totalTokenShares;
-
-    mapping(address => bool) public isVerifier;
-    mapping(address => mapping(address => bool)) public approvals;
-    mapping(address => uint256) public approvalCount;
-    mapping(address => bool) public isVerified;
-    uint256 public requiredApprovals = 2;
-
-    event BeneficiaryAdded(address indexed recipient, uint256 share);
-    event IdentityApproved(address indexed beneficiary, address verifier);
-    event IdentityVerified(address indexed beneficiary);
-    event DeathConfirmed(uint256 time);
-    event FundsDistributed();
-    event WillHashSet(string ipfsHash);
+    mapping(address => uint256) public shares;
+    address[] public beneficiaryList;
+    address[] public erc20TokenList;
 
     modifier onlyOwner() {
-        require(msg.sender == owner, "Only owner");
-        require(!isDeceased, "Already deceased");
+        require(msg.sender == owner, "Not owner");
         _;
     }
 
-    modifier onlyOracle() {
-        require(msg.sender == oracle, "Only oracle can confirm");
+    modifier onlyExecutorOrOracle() {
+        require(msg.sender == executor || msg.sender == oracle, "Not authorized");
         _;
     }
 
-    constructor(address _oracle, address _token) {
+    event EncryptedWillUpdated(string ipfsHash);
+    event EstateDescriptionUpdated(string description);
+    event BeneficiaryUpdated(address recipient, uint256 share);
+    event BeneficiaryRemoved(address recipient);
+    event BeneficiariesReset();
+    event OwnerDeclaredDeceased(address by);
+    event WillExecuted(uint256 totalETH);
+
+    constructor(address _oracle, address _executor) {
         owner = msg.sender;
         oracle = _oracle;
-        token = IERC20(_token);
-    }
-
-    function addTokenBeneficiary(address _recipient, uint256 _share) external onlyOwner {
-        require(_share > 0, "Invalid share");
-
-        if (tokenShares[_recipient] == 0) {
-            tokenBeneficiaries.push(Beneficiary(_recipient, _share));
-        } else {
-            for (uint i = 0; i < tokenBeneficiaries.length; i++) {
-                if (tokenBeneficiaries[i].recipient == _recipient) {
-                    totalTokenShares -= tokenBeneficiaries[i].share;
-                    tokenBeneficiaries[i].share = _share;
-                    break;
-                }
-            }
-        }
-
-        tokenShares[_recipient] = _share;
-        totalTokenShares += _share;
-        emit BeneficiaryAdded(_recipient, _share);
-    }
-
-    function approveIdentity(address _beneficiary) external {
-        require(isVerifier[msg.sender], "Not authorized verifier");
-        require(!approvals[_beneficiary][msg.sender], "Already approved");
-
-        approvals[_beneficiary][msg.sender] = true;
-        approvalCount[_beneficiary]++;
-
-        emit IdentityApproved(_beneficiary, msg.sender);
-
-        if (approvalCount[_beneficiary] >= requiredApprovals && !isVerified[_beneficiary]) {
-            isVerified[_beneficiary] = true;
-            emit IdentityVerified(_beneficiary);
-        }
-    }
-
-    function confirmDeceased() external onlyOracle {
-        require(!isDeceased, "Already confirmed");
-        isDeceased = true;
-        deceasedTime = block.timestamp;
-        emit DeathConfirmed(deceasedTime);
+        executor = _executor;
     }
 
     function setEncryptedWill(string calldata _ipfsHash) external onlyOwner {
         encryptedWillHash = _ipfsHash;
-        emit WillHashSet(_ipfsHash);
+        emit EncryptedWillUpdated(_ipfsHash);
     }
 
     function getEncryptedWill() external view returns (string memory) {
         return encryptedWillHash;
     }
 
-    function distributeToken() external {
-        require(isDeceased, "Owner not deceased");
-        require(totalTokenShares > 0, "No token shares");
+    function setEstateDescription(string calldata _description) external onlyOwner {
+        estateDescription = _description;
+        emit EstateDescriptionUpdated(_description);
+    }
 
-        uint256 balance = token.balanceOf(address(this));
+    function addTokenBeneficiary(address _recipient, uint256 _share) external onlyOwner {
+        if (shares[_recipient] == 0) {
+            beneficiaryList.push(_recipient);
+        }
+        shares[_recipient] = _share;
+        emit BeneficiaryUpdated(_recipient, _share);
+    }
 
-        for (uint i = 0; i < tokenBeneficiaries.length; i++) {
-            address recipient = tokenBeneficiaries[i].recipient;
-            if (isVerified[recipient]) {
-                uint256 amount = (balance * tokenBeneficiaries[i].share) / totalTokenShares;
-                token.transfer(recipient, amount);
+    function removeBeneficiary(address _recipient) external onlyOwner {
+        require(shares[_recipient] > 0, "No such beneficiary");
+        shares[_recipient] = 0;
+        for (uint i = 0; i < beneficiaryList.length; i++) {
+            if (beneficiaryList[i] == _recipient) {
+                beneficiaryList[i] = beneficiaryList[beneficiaryList.length - 1];
+                beneficiaryList.pop();
+                break;
+            }
+        }
+        emit BeneficiaryRemoved(_recipient);
+    }
+
+    function resetAllBeneficiaries() public onlyOwner {
+        for (uint i = 0; i < beneficiaryList.length; i++) {
+            shares[beneficiaryList[i]] = 0;
+        }
+        delete beneficiaryList;
+        emit BeneficiariesReset();
+    }
+
+    function getAllBeneficiaries() external view returns (address[] memory) {
+        return beneficiaryList;
+    }
+
+    function addERC20Token(address _tokenAddress) external onlyOwner {
+        erc20TokenList.push(_tokenAddress);
+    }
+
+    // 🔒 Oracle 或 Executor 均可确认死亡
+    function confirmDeath() external onlyExecutorOrOracle {
+        require(!isDeceased, "Already declared deceased");
+        isDeceased = true;
+        emit OwnerDeclaredDeceased(msg.sender);
+        _executeWill(); // 自动执行
+    }
+
+    function _executeWill() internal {
+        uint256 totalShares = 0;
+        for (uint i = 0; i < beneficiaryList.length; i++) {
+            totalShares += shares[beneficiaryList[i]];
+        }
+        require(totalShares > 0, "No valid beneficiaries");
+
+        // 分发 ETH
+        uint256 ethBalance = address(this).balance;
+        if (ethBalance > 0) {
+            for (uint i = 0; i < beneficiaryList.length; i++) {
+                address recipient = beneficiaryList[i];
+                uint256 amount = (ethBalance * shares[recipient]) / totalShares;
+                payable(recipient).transfer(amount);
+            }
+            emit WillExecuted(ethBalance);
+        }
+
+        // 分发 ERC20
+        for (uint t = 0; t < erc20TokenList.length; t++) {
+            IERC20 token = IERC20(erc20TokenList[t]);
+            uint256 tokenBalance = token.balanceOf(address(this));
+            if (tokenBalance > 0) {
+                for (uint i = 0; i < beneficiaryList.length; i++) {
+                    address recipient = beneficiaryList[i];
+                    uint256 amount = (tokenBalance * shares[recipient]) / totalShares;
+                    token.transfer(recipient, amount);
+                }
             }
         }
 
-        totalTokenShares = 0;
-        emit FundsDistributed();
+        resetAllBeneficiaries();
     }
 
-    function addVerifier(address _verifier) external onlyOwner {
-        isVerifier[_verifier] = true;
-    }
-
-    function setRequiredApprovals(uint256 _count) external onlyOwner {
-        require(_count > 0, "Must be > 0");
-        requiredApprovals = _count;
-    }
-
-    function getBeneficiaries() external view returns (Beneficiary[] memory) {
-        return tokenBeneficiaries;
-    }
+    receive() external payable {}
 }
